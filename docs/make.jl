@@ -25,6 +25,7 @@ makedocs(
 		"showinfo.md",
 		"calculations.md",
 		"modify.md",
+		"book.md",
 		"unexported.md",
 		"references.md",
 	],
