@@ -27,6 +27,7 @@ export parameter
 export parameters
 export params
 export parent
+export reduced_parameter_matrix
 export scalar_product
 export set_congruence
 export specialize

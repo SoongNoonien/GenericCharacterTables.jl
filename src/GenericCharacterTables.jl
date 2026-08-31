@@ -37,5 +37,6 @@ include("Congruence.jl")
 include("Exports.jl")
 include("Deprecations.jl")
 include("CyclotomicFac.jl")
+include("Symmetry.jl")
 
 end
