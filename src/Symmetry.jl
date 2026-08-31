@@ -1,3 +1,5 @@
+# Usage with Plots: heatmap(reduced_parameter_matrix(char, val), aspect_ratio=1, axis=false)
+
 function exceptions_apply(exceptions, vars, vals)
   for exception in exceptions
     if is_integer(evaluate(exception, vars, vals))
