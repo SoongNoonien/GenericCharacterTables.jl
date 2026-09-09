@@ -402,40 +402,21 @@ function (R::GenericCycloRing)(f::Dict{UPolyFrac,UPoly}; simplify::Bool=true, us
   else
     substitutes = nothing
   end
-  power = R.power
 
-  # reduce numerators modulo denominators
+  # split each exponent into its polynomial part and a remainder
   L = NTuple{4,UPoly}[]
   d = 1
   for (g, c) in f
-    if !iszero(c)
-      if substitutes === nothing
-        gp = g
-      else
-        # After ensuring the congruence for the first parameter
-        # via the evaluation at `substitutes[1]` further
-        # simplifications may be possible. Let `g` for
-        # example be `(q+1)//2` and `q` congruent to `1`
-        # modulo `2`. Then `substitutes[1]` is `2*q+1`
-        # and `gp=(2*q+2)//2=q+1` which simplifies to `0`.
-        #
-        # `power` is used in cases where the first parameter
-        # represents a root of order `power`. In this case the
-        # polynomials need to be deflated before the evaluation
-        # and then inflated back again.
-        if isone(power)
-          gp = evaluate(g, [1], [substitutes[1]])
-        else
-          gd = deflate(numerator(g), [power])//deflate(denominator(g), [power])
-          gp = evaluate(gd, [1], [substitutes[1]])
-        end
-      end
-      a, r = divrem(numerator(gp), denominator(gp))
-      push!(L, (c, denominator(gp), r, a))
-
-      # find the common denominator of the exponents in `f` (of all `a`)
-      d = lcm(d, Int(denominator(data(a))))
+    iszero(c) && continue
+    g_2, r, a, a_denominator = if substitutes === nothing
+      split_exponent(g)
+    else
+      prepare_exponent!(R, substitutes, g)
     end
+    push!(L, (c, g_2, r, a))
+
+    # find the common denominator of the exponents in `f` (of all `a`)
+    d = lcm(d, a_denominator)
   end
 
   # return early if `L` is empty
@@ -444,37 +425,55 @@ function (R::GenericCycloRing)(f::Dict{UPolyFrac,UPoly}; simplify::Bool=true, us
   end
 
   fp = Dict{UPolyFrac,UPoly}()
+  frac_ring = fraction_field(base_ring(R))
+
+  # Add `coefficient` to the summand of exponent `g`, after reversing the
+  # congruence preparation applied above.
+  function collect_summand!(g::UPolyFrac, coefficient::UPoly)
+    if substitutes !== nothing
+      g = restore_exponent!(R, substitutes, g)
+    end
+    if haskey(fp, g)
+      fp[g] += coefficient
+    else
+      fp[g] = coefficient
+    end
+  end
+
+  # Each `r` is a remainder modulo its `g_2` and the exponent it came from was
+  # already in lowest terms, so the two are coprime and `frac_ring` may skip
+  # cancelling them, which would cost a multivariate gcd.
+
+  # For `d == 1` all exponents are integral: their normal form is zero and
+  # `phi_1 = x - 1` leaves nothing to distribute, so the remainder is already
+  # the whole exponent. This is by far the most common case.
+  if isone(d)
+    for (c, g_2, r, _) in L
+      collect_summand!(frac_ring(r, g_2), c)
+    end
+    return GenericCyclo(strip_zeros!(fp), R)
+  end
+
+  exponent_ring = get_exponent_ring!(R)
+  S, x = ZZ[:x]
+  phi_d = cyclotomic_polynomial(d, S)
   for (c, g_2, r, a) in L
+    r_g_2 = frac_ring(r, g_2)
+
     # normalize the polynomial part of the exponent
-    ap = normal_form(change_coefficient_ring(ZZ, d * a; cached=false), d)
+    ap = normal_form(change_coefficient_ring(ZZ, d * a; parent=exponent_ring), d)
 
     # normalize the constant part
     t = constant_coefficient(ap)
     app = change_coefficient_ring(coefficient_ring(base_ring(R)), ap - t; parent=base_ring(R))
-    S, x = ZZ[:x]
-    p = mod(x^t, cyclotomic_polynomial(d, S))
+    p = mod(x^t, phi_d)
 
     # distribute the normalized constant part
-    r_g_2 = r//g_2
     for (i, cp) in enumerate(coefficients(p))
-      tp = i - 1
-      g = (app + tp)//d + r_g_2
-      if substitutes === nothing
-        gp = g
-      else
-        gp = evaluate(g, [1], [substitutes[2]])
-        if !isone(power)
-          gp = inflate(numerator(gp), [power])//inflate(denominator(gp), [power])
-        end
-      end
-      if haskey(fp, gp)
-        fp[gp] += cp * c
-      else
-        fp[gp] = cp * c
-      end
+      collect_summand!((app + (i - 1))//d + r_g_2, cp * c)
     end
   end
-  return GenericCyclo(filter(p -> !iszero(p.second), fp), R)
+  return GenericCyclo(strip_zeros!(fp), R)
 end
 
 function (R::GenericCycloRing)(x::GenericCyclo)
@@ -598,6 +597,64 @@ julia> params(S, [:q, :i])
 """
 params(S::GenericCycloRing, vars::Vector{Symbol}) = gens(base_ring(S), vars)
 params(S::GenericCycloRing, vars::Vector{String}) = gens(base_ring(S), vars)
+
+# Return `(denominator(g), r, a, den)` where `a` and `r` are the quotient and the
+# remainder of `g` and `den` is the common denominator of the coefficients of `a`.
+function split_exponent(g::UPolyFrac)
+  a, r = divrem(numerator(g), denominator(g))
+  return (denominator(g), r, a, Int(denominator(data(a))))
+end
+
+@doc raw"""
+    prepare_exponent!(R::GenericCycloRing, substitutes::Tuple{UPoly,UPoly}, g::UPolyFrac)
+
+Return `split_exponent` of `g` evaluated at `substitutes[1]`, memoized in `R`.
+
+That evaluation may open up further simplifications: let `g` be `(q+1)//2` with
+`q` congruent to `1` modulo `2`. Then the substitute is `2*q+1` and `g` becomes
+`(2*q+2)//2 = q+1`. `R.power` covers the case where the first parameter
+represents a root of order `power`; the polynomials are then deflated before the
+evaluation and inflated again in `restore_exponent!`.
+"""
+function prepare_exponent!(
+  R::GenericCycloRing, substitutes::Tuple{UPoly,UPoly}, g::UPolyFrac
+)
+  return get!(R.prepared_exponents, g) do
+    if isone(R.power)
+      gp = evaluate(g, [1], [substitutes[1]])
+    else
+      gd = deflate(numerator(g), [R.power])//deflate(denominator(g), [R.power])
+      gp = evaluate(gd, [1], [substitutes[1]])
+    end
+    split_exponent(gp)
+  end
+end
+
+@doc raw"""
+    restore_exponent!(R::GenericCycloRing, substitutes::Tuple{UPoly,UPoly}, g::UPolyFrac)
+
+Undo the evaluation done by `prepare_exponent!`, memoized in `R`.
+"""
+function restore_exponent!(
+  R::GenericCycloRing, substitutes::Tuple{UPoly,UPoly}, g::UPolyFrac
+)
+  return get!(R.restored_exponents, g) do
+    gp = evaluate(g, [1], [substitutes[2]])
+    isone(R.power) && return gp
+    inflate(numerator(gp), [R.power])//inflate(denominator(gp), [R.power])
+  end
+end
+
+# Lazily created ZZ counterpart of `base_ring(R)`; see `GenericCycloRing`.
+function get_exponent_ring!(R::GenericCycloRing)
+  if !isdefined(R, :exponent_ring)
+    S = base_ring(R)
+    R.exponent_ring = universal_polynomial_ring(
+      ZZ, symbols(S); internal_ordering=internal_ordering(S), cached=false
+    )[1]
+  end
+  return R.exponent_ring
+end
 
 # congruence computation
 function get_substitutes!(R::GenericCycloRing)

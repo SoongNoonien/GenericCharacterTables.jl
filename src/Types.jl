@@ -1,4 +1,5 @@
 const ZZUPoly = universal_poly_type(ZZRingElem)
+const ZZUPolyRing = universal_poly_ring_type(ZZRingElem)
 const UPoly = universal_poly_type(QQFieldElem)
 const UPolyRing = universal_poly_ring_type(QQFieldElem)
 const UPolyFrac = Generic.FracFieldElem{UPoly}
@@ -21,15 +22,25 @@ mutable struct GenericCycloRing <: Ring
   symbol::Symbol
   congruence::Union{Tuple{ZZRingElem,ZZRingElem},Nothing}
   power::Int64
+  # The same exponents come up over and over while simplifying the sums and
+  # products making up e.g. a scalar product, so the work spent on a single
+  # exponent is memoized here. See `prepare_exponent!` and `restore_exponent!`.
+  prepared_exponents::Dict{UPolyFrac,Tuple{UPoly,UPoly,UPoly,Int64}}
+  restored_exponents::Dict{UPolyFrac,UPolyFrac}
   substitute::UPoly
   substitute_inv::UPoly
+  # Uncached companion of `base_ring` over ZZ, used to normalize exponents.
+  # It is private to this ring for the same reason `base_ring` is: variables
+  # get added on demand, so sharing it between tables would mix them up.
+  exponent_ring::ZZUPolyRing
   function GenericCycloRing(
     R::UPolyRing,
     symbol::Symbol,
     congruence::Union{Tuple{ZZRingElem,ZZRingElem},Nothing},
     power::Int64
   )
-    return new(R, symbol, congruence, power)
+    return new(R, symbol, congruence, power,
+      Dict{UPolyFrac,Tuple{UPoly,UPoly,UPoly,Int64}}(), Dict{UPolyFrac,UPolyFrac}())
   end
 end
 
